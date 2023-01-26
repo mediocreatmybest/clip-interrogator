@@ -82,9 +82,9 @@ def main():
         flavor_intermediate_count=args.flavor_intermediate_count,
         quiet=args.quiet,
         load_artists=args.disable_artists,
-        load_flavors=args.disable_flavs,
-        load_mediums=args.disable_mediums,
-        load_movements=args.disable_movements,
+        #load_flavors=args.disable_flavs,
+        #load_mediums=args.disable_mediums,
+        #load_movements=args.disable_movements,
         load_trendings=args.disable_trends
         )
     ci = Interrogator(config)

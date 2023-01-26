@@ -21,7 +21,7 @@ BLIP_MODELS = {
     'large': 'https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large_caption.pth'
 }
 
-@dataclass 
+@dataclass
 class Config:
     # models can optionally be passed in directly
     blip_model: BLIP_Decoder = None
@@ -47,6 +47,13 @@ class Config:
     flavor_intermediate_count: int = 2048
     quiet: bool = False # when quiet progress bars are not shown
 
+    # load flavorflav options
+    load_artists: bool = True
+    load_flavors: bool = True
+    load_mediums: bool = True
+    load_movements: bool = True
+    load_trendings: bool = True
+
 class Interrogator():
     def __init__(self, config: Config):
         self.config = config
@@ -60,8 +67,8 @@ class Interrogator():
             med_config = os.path.join(configs_path, 'med_config.json')
             blip_model = blip_decoder(
                 pretrained=BLIP_MODELS[config.blip_model_type],
-                image_size=config.blip_image_eval_size, 
-                vit=config.blip_model_type, 
+                image_size=config.blip_image_eval_size,
+                vit=config.blip_model_type,
                 med_config=med_config
             )
             blip_model.eval()
@@ -82,8 +89,8 @@ class Interrogator():
 
             clip_model_name, clip_model_pretrained_name = config.clip_model_name.split('/', 2)
             self.clip_model, _, self.clip_preprocess = open_clip.create_model_and_transforms(
-                clip_model_name, 
-                pretrained=clip_model_pretrained_name, 
+                clip_model_name,
+                pretrained=clip_model_pretrained_name,
                 precision='fp16' if config.device == 'cuda' else 'fp32',
                 device=config.device,
                 jit=False,
@@ -111,6 +118,8 @@ class Interrogator():
         self.movements = LabelTable(_load_list(config.data_path, 'movements.txt'), "movements", self.clip_model, self.tokenize, config)
         self.trendings = LabelTable(trending_list, "trendings", self.clip_model, self.tokenize, config)
 
+
+
         end_time = time.time()
         if not config.quiet:
             print(f"Loaded CLIP model and data in {end_time-start_time:.2f} seconds.")
@@ -127,10 +136,10 @@ class Interrogator():
 
         with torch.no_grad():
             caption = self.blip_model.generate(
-                gpu_image, 
-                sample=False, 
-                num_beams=self.config.blip_num_beams, 
-                max_length=self.config.blip_max_length, 
+                gpu_image,
+                sample=False,
+                num_beams=self.config.blip_num_beams,
+                max_length=self.config.blip_max_length,
                 min_length=5
             )
         if self.config.blip_offload:
@@ -153,6 +162,18 @@ class Interrogator():
         trending = self.trendings.rank(image_features, 1)[0]
         movement = self.movements.rank(image_features, 1)[0]
         flaves = ", ".join(self.flavors.rank(image_features, max_flavors))
+
+        # Remove Flavorflav items if disabled in config
+        if self.config.load_artists is False:
+            artist = ""
+        if self.config.load_flavors is False:
+            flaves = ""
+        if self.config.load_mediums is False:
+            medium = ""
+        if self.config.load_movements is False:
+            movement = ""
+        if self.config.load_trendings is False:
+            trending = ""
 
         if caption.startswith(medium):
             prompt = f"{caption} {artist}, {trending}, {movement}, {flaves}"
@@ -177,6 +198,19 @@ class Interrogator():
         best_artist = self.artists.rank(image_features, 1)[0]
         best_trending = self.trendings.rank(image_features, 1)[0]
         best_movement = self.movements.rank(image_features, 1)[0]
+
+        # Remove Flavorflav items if disabled in config
+        if self.config.load_artists is False:
+            best_artist = ""
+        if self.config.load_flavors is False:
+            flaves = ""
+        if self.config.load_mediums is False:
+            best_medium = ""
+        if self.config.load_movements is False:
+            best_movement = ""
+        if self.config.load_trendings is False:
+            best_trending = ""
+
 
         best_prompt = caption
         best_sim = self.similarity(image_features, best_prompt)
@@ -277,15 +311,15 @@ class LabelTable():
             if cache_filepath is not None:
                 with open(cache_filepath, 'wb') as f:
                     pickle.dump({
-                        "labels": self.labels, 
-                        "embeds": self.embeds, 
-                        "hash": hash, 
+                        "labels": self.labels,
+                        "embeds": self.embeds,
+                        "hash": hash,
                         "model": config.clip_model_name
                     }, f)
 
         if self.device == 'cpu' or self.device == torch.device('cpu'):
             self.embeds = [e.astype(np.float32) for e in self.embeds]
-    
+
     def _rank(self, image_features: torch.Tensor, text_embeds: torch.Tensor, top_count: int=1) -> str:
         top_count = min(top_count, len(text_embeds))
         text_embeds = torch.stack([torch.from_numpy(t) for t in text_embeds]).to(self.device)

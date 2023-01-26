@@ -8,6 +8,7 @@ import torch
 from PIL import Image
 from clip_interrogator import Interrogator, Config
 
+
 def inference(ci, image, mode):
     image = image.convert('RGB')
     if mode == 'best':
@@ -17,13 +18,32 @@ def inference(ci, image, mode):
     else:
         return ci.interrogate_fast(image)
 
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--clip', default='ViT-L-14/openai', help='name of CLIP model to use')
+    parser.add_argument('-c', '--clip', default='ViT-L-14/openai', metavar='ViT-H-14/laion2b_s32b_b79k', help='name of CLIP model to use')
     parser.add_argument('-d', '--device', default='auto', help='device to use (auto, cuda or cpu)')
     parser.add_argument('-f', '--folder', help='path to folder of images')
     parser.add_argument('-i', '--image', help='image file or url')
     parser.add_argument('-m', '--mode', default='best', help='best, classic, or fast')
+    parser.add_argument('-o', '--output-type', default='captions', help='captions, csv', choices=['captions', 'csv'])
+    # Additional BLIP settings based on config function
+    parser.add_argument("-bis", "--blip_image_eval_size", type=int, default=384, help="Size of image for evaluation")
+    parser.add_argument("-bml", "--blip_max_length", type=int, default=32, help="Maximum length of BLIP model output")
+    parser.add_argument("-bmt", "--blip_model_type", default='large', choices=['base','large'], help="Type of BLIP model ('base' or 'large')")
+    parser.add_argument("-bb", "--blip_num_beams", type=int, default=8, help="Number of beams for BLIP model")
+    parser.add_argument("-bo", "--blip_offload", type=bool, default=True, help="Offload BLIP model to CPU")
+    # Additonal Interrogator settings based on config function
+    parser.add_argument("-flc", "--flavor_intermediate_count", type=int, default=2048, help="Intermediate count for flavors, lowest value seems to be 4")
+    parser.add_argument("-q", "--quiet", type=bool, default=False, help="Whether to show progress bars")
+    # Additional Options to disable flavors, artists, trendings, movements, mediums
+    # Flavs broken.
+    #parser.add_argument("-df", "--disable-flavs", action="store_false", help="Disables flavors within captions")
+    parser.add_argument("-da", "--disable-artists", action="store_false", help="Disables artists within captions")
+    parser.add_argument("-dm", "--disable-mediums", action="store_false", help="Disables mediums within captions")
+    parser.add_argument("-dmov", "--disable-movements", action="store_false", help="Disables movements within captions")
+    parser.add_argument("-dt", "--disable-trends", action="store_false", help="Disables trendings within captions")
+
 
     args = parser.parse_args()
     if not args.folder and not args.image:
@@ -50,7 +70,22 @@ def main():
         device = torch.device(args.device)
 
     # generate a nice prompt
-    config = Config(device=device, clip_model_name=args.clip)
+    config = Config(
+        device=device,
+        clip_model_name=args.clip,
+        blip_image_eval_size=args.blip_image_eval_size,
+        blip_max_length=args.blip_max_length,
+        blip_model_type=args.blip_model_type,
+        blip_num_beams=args.blip_num_beams,
+        blip_offload=args.blip_offload,
+        flavor_intermediate_count=args.flavor_intermediate_count,
+        quiet=args.quiet,
+        load_artists=args.disable_artists,
+        load_flavors=args.disable_flavs,
+        load_mediums=args.disable_mediums,
+        load_movements=args.disable_movements,
+        load_trendings=args.disable_trends
+        )
     ci = Interrogator(config)
 
     # process single image
@@ -79,7 +114,7 @@ def main():
             prompts.append(prompt)
             print(prompt)
 
-        if len(prompts):
+        if args.output-type == 'csv':
             csv_path = os.path.join(args.folder, 'desc.csv')
             with open(csv_path, 'w', encoding='utf-8', newline='') as f:
                 w = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
@@ -88,6 +123,15 @@ def main():
                     w.writerow([file, prompt])
 
             print(f"\n\n\n\nGenerated {len(prompts)} and saved to {csv_path}, enjoy!")
+
+        elif args.output-type == 'captions':
+            for file, prompt in zip(files, prompts):
+                file_name = os.path.splitext(file)[0] + '.txt'
+                file_path = os.path.join(args.folder, file_name)
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(prompt)
+
+            print(f"\n\n\n\nGenerated {len(prompts)} prompts and saved to {args.folder}, enjoy!")
 
 if __name__ == "__main__":
     main()

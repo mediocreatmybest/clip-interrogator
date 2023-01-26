@@ -8,3 +8,5 @@ clip-interrogator/
 clip_interrogator.egg-info/
 dist/
 venv/
+clip_interrogator/test*
+test*

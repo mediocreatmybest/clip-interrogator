@@ -40,8 +40,9 @@ def main():
     # Flavs broken.
     #parser.add_argument("-df", "--disable-flavs", action="store_false", help="Disables flavors within captions")
     parser.add_argument("-da", "--disable-artists", action="store_false", help="Disables artists within captions")
-    parser.add_argument("-dm", "--disable-mediums", action="store_false", help="Disables mediums within captions")
-    parser.add_argument("-dmov", "--disable-movements", action="store_false", help="Disables movements within captions")
+    # Leaves gaps in captions
+    #parser.add_argument("-dm", "--disable-mediums", action="store_false", help="Disables mediums within captions")
+    #parser.add_argument("-dmov", "--disable-movements", action="store_false", help="Disables movements within captions")
     parser.add_argument("-dt", "--disable-trends", action="store_false", help="Disables trendings within captions")
 
 

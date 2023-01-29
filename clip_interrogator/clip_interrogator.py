@@ -108,6 +108,7 @@ class Interrogator():
         trending_list.extend(["featured on "+site for site in sites])
         trending_list.extend([site+" contest winner" for site in sites])
 
+        # Make these options loadable from config with if self.config.load_xxx
         if self.config.load_artists:
 
             raw_artists = _load_list(config.data_path, 'artists.txt')
@@ -118,7 +119,9 @@ class Interrogator():
         self.flavors = LabelTable(_load_list(config.data_path, 'flavors.txt'), "flavors", self.clip_model, self.tokenize, config)
         self.mediums = LabelTable(_load_list(config.data_path, 'mediums.txt'), "mediums", self.clip_model, self.tokenize, config)
         self.movements = LabelTable(_load_list(config.data_path, 'movements.txt'), "movements", self.clip_model, self.tokenize, config)
-        self.trendings = LabelTable(trending_list, "trendings", self.clip_model, self.tokenize, config)
+
+        if self.config.load_trendings:
+            self.trendings = LabelTable(trending_list, "trendings", self.clip_model, self.tokenize, config)
 
 
 
@@ -162,7 +165,8 @@ class Interrogator():
         medium = self.mediums.rank(image_features, 1)[0]
         if self.config.load_artists:
             artist = self.artists.rank(image_features, 1)[0]
-        trending = self.trendings.rank(image_features, 1)[0]
+        if self.config.load_trendings:
+            trending = self.trendings.rank(image_features, 1)[0]
         movement = self.movements.rank(image_features, 1)[0]
         flaves = ", ".join(self.flavors.rank(image_features, max_flavors))
 
@@ -217,7 +221,8 @@ class Interrogator():
         best_medium = self.mediums.rank(image_features, 1)[0]
         if self.config.load_artists:
             best_artist = self.artists.rank(image_features, 1)[0]
-        best_trending = self.trendings.rank(image_features, 1)[0]
+        if self.config.load_trendings:
+            best_trending = self.trendings.rank(image_features, 1)[0]
         best_movement = self.movements.rank(image_features, 1)[0]
 
         # Remove Flavorflav items if disabled in config

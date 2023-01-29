@@ -108,11 +108,13 @@ class Interrogator():
         trending_list.extend(["featured on "+site for site in sites])
         trending_list.extend([site+" contest winner" for site in sites])
 
-        raw_artists = _load_list(config.data_path, 'artists.txt')
-        artists = [f"by {a}" for a in raw_artists]
-        artists.extend([f"inspired by {a}" for a in raw_artists])
+        if self.config.load_artists:
 
-        self.artists = LabelTable(artists, "artists", self.clip_model, self.tokenize, config)
+            raw_artists = _load_list(config.data_path, 'artists.txt')
+            artists = [f"by {a}" for a in raw_artists]
+            artists.extend([f"inspired by {a}" for a in raw_artists])
+
+            self.artists = LabelTable(artists, "artists", self.clip_model, self.tokenize, config)
         self.flavors = LabelTable(_load_list(config.data_path, 'flavors.txt'), "flavors", self.clip_model, self.tokenize, config)
         self.mediums = LabelTable(_load_list(config.data_path, 'mediums.txt'), "mediums", self.clip_model, self.tokenize, config)
         self.movements = LabelTable(_load_list(config.data_path, 'movements.txt'), "movements", self.clip_model, self.tokenize, config)
@@ -158,7 +160,8 @@ class Interrogator():
         image_features = self.image_to_features(image)
 
         medium = self.mediums.rank(image_features, 1)[0]
-        artist = self.artists.rank(image_features, 1)[0]
+        if self.config.load_artists:
+            artist = self.artists.rank(image_features, 1)[0]
         trending = self.trendings.rank(image_features, 1)[0]
         movement = self.movements.rank(image_features, 1)[0]
         flaves = ", ".join(self.flavors.rank(image_features, max_flavors))
@@ -185,7 +188,24 @@ class Interrogator():
     def interrogate_fast(self, image: Image, max_flavors: int = 32) -> str:
         caption = self.generate_caption(image)
         image_features = self.image_to_features(image)
-        merged = _merge_tables([self.artists, self.flavors, self.mediums, self.movements, self.trendings], self.config)
+
+        # Make this a configurable option
+        if self.config.load_artists is True:
+            merged_options.append(self.artists)
+        if self.config.load_flavors is True:
+            merged_options.append(self.flavors)
+        if self.config.load_mediums is True:
+            merged_options.append(self.mediums)
+        if self.config.load_movements is True:
+            merged_options.append(self.movements)
+        if self.config.load_trendings is True:
+            merged_options.append(self.trendings)
+
+        # Move this into a merged list so we can append to it
+        #merged_options = [self.artists, self.flavors, self.mediums, self.movements, self.trendings]
+        merged_options = []
+        merged = _merge_tables(merged_options, self.config)
+        #merged = _merge_tables([self.artists, self.flavors, self.mediums, self.movements, self.trendings], self.config)
         tops = merged.rank(image_features, max_flavors)
         return _truncate_to_fit(caption + ", " + ", ".join(tops), self.tokenize)
 
@@ -195,7 +215,8 @@ class Interrogator():
 
         flaves = self.flavors.rank(image_features, self.config.flavor_intermediate_count)
         best_medium = self.mediums.rank(image_features, 1)[0]
-        best_artist = self.artists.rank(image_features, 1)[0]
+        if self.config.load_artists:
+            best_artist = self.artists.rank(image_features, 1)[0]
         best_trending = self.trendings.rank(image_features, 1)[0]
         best_movement = self.movements.rank(image_features, 1)[0]
 
@@ -232,14 +253,29 @@ class Interrogator():
                 prompt = best_prompt
                 for bit in range(len(opts)):
                     if i & (1 << bit):
-                        prompt += ", " + opts[bit]
+                        #prompt += ", " + opts[bit]
+                        # Convert the list to a string with .join
+                        prompt += ", " + ", ".join(opts[bit])
                 prompts.append(prompt)
 
             t = LabelTable(prompts, None, self.clip_model, self.tokenize, self.config)
             best_prompt = t.rank(image_features, 1)[0]
             best_sim = self.similarity(image_features, best_prompt)
 
-        check_multi_batch([best_medium, best_artist, best_trending, best_movement])
+        best_options = []
+        # Append the best of each table
+        if self.config.load_mediums is True:
+            best_options.append(best_medium)
+        if self.config.load_artists is True:
+            best_options.append(best_artist)
+        if self.config.load_trendings is True:
+            best_options.append(best_trending)
+        if self.config.load_movements is True:
+            best_options.append(best_movement)
+
+        # Move this into a list so we can append to it
+        check_multi_batch([best_options])
+        #check_multi_batch([best_medium, best_artist, best_trending, best_movement])
 
         extended_flavors = set(flaves)
         for _ in tqdm(range(max_flavors), desc="Flavor chain", disable=self.config.quiet):

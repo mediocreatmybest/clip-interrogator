@@ -40,9 +40,8 @@ def main():
     # Flavs broken.
     #parser.add_argument("-df", "--disable-flavs", action="store_false", help="Disables flavors within captions")
     parser.add_argument("-da", "--disable-artists", action="store_false", help="Disables artists within captions")
-    # Leaves gaps in captions
-    #parser.add_argument("-dm", "--disable-mediums", action="store_false", help="Disables mediums within captions")
-    #parser.add_argument("-dmov", "--disable-movements", action="store_false", help="Disables movements within captions")
+    parser.add_argument("-dm", "--disable-mediums", action="store_false", help="Disables mediums within captions")
+    parser.add_argument("-dmov", "--disable-movements", action="store_false", help="Disables movements within captions")
     parser.add_argument("-dt", "--disable-trends", action="store_false", help="Disables trendings within captions")
 
 
@@ -83,8 +82,8 @@ def main():
         quiet=args.quiet,
         load_artists=args.disable_artists,
         #load_flavors=args.disable_flavs,
-        #load_mediums=args.disable_mediums,
-        #load_movements=args.disable_movements,
+        load_mediums=args.disable_mediums,
+        load_movements=args.disable_movements,
         load_trendings=args.disable_trends
         )
     ci = Interrogator(config)

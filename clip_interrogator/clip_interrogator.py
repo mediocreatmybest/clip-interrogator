@@ -7,6 +7,7 @@ import os
 import pickle
 import time
 import torch
+import re
 
 from dataclasses import dataclass
 from blip.models.blip import blip_decoder, BLIP_Decoder
@@ -102,27 +103,26 @@ class Interrogator():
             self.clip_preprocess = config.clip_preprocess
         self.tokenize = open_clip.get_tokenizer(clip_model_name)
 
-        sites = ['Artstation', 'behance', 'cg society', 'cgsociety', 'deviantart', 'dribble', 'flickr', 'instagram', 'pexels', 'pinterest', 'pixabay', 'pixiv', 'polycount', 'reddit', 'shutterstock', 'tumblr', 'unsplash', 'zbrush central']
-        trending_list = [site for site in sites]
-        trending_list.extend(["trending on "+site for site in sites])
-        trending_list.extend(["featured on "+site for site in sites])
-        trending_list.extend([site+" contest winner" for site in sites])
+        if self.config.load_trendings:
+            sites = ['Artstation', 'behance', 'cg society', 'cgsociety', 'deviantart', 'dribble', 'flickr', 'instagram', 'pexels', 'pinterest', 'pixabay', 'pixiv', 'polycount', 'reddit', 'shutterstock', 'tumblr', 'unsplash', 'zbrush central']
+            trending_list = [site for site in sites]
+            trending_list.extend(["trending on "+site for site in sites])
+            trending_list.extend(["featured on "+site for site in sites])
+            trending_list.extend([site+" contest winner" for site in sites])
 
-        # Make these options loadable from config with if self.config.load_xxx
+        # Make these options loadable from config with: if self.config.load_xxx
         if self.config.load_artists:
-
             raw_artists = _load_list(config.data_path, 'artists.txt')
             artists = [f"by {a}" for a in raw_artists]
             artists.extend([f"inspired by {a}" for a in raw_artists])
-
             self.artists = LabelTable(artists, "artists", self.clip_model, self.tokenize, config)
         self.flavors = LabelTable(_load_list(config.data_path, 'flavors.txt'), "flavors", self.clip_model, self.tokenize, config)
-        self.mediums = LabelTable(_load_list(config.data_path, 'mediums.txt'), "mediums", self.clip_model, self.tokenize, config)
-        self.movements = LabelTable(_load_list(config.data_path, 'movements.txt'), "movements", self.clip_model, self.tokenize, config)
-
+        if self.config.load_mediums:
+            self.mediums = LabelTable(_load_list(config.data_path, 'mediums.txt'), "mediums", self.clip_model, self.tokenize, config)
+        if self.config.load_movements:
+            self.movements = LabelTable(_load_list(config.data_path, 'movements.txt'), "movements", self.clip_model, self.tokenize, config)
         if self.config.load_trendings:
             self.trendings = LabelTable(trending_list, "trendings", self.clip_model, self.tokenize, config)
-
 
 
         end_time = time.time()
@@ -162,12 +162,14 @@ class Interrogator():
         caption = self.generate_caption(image)
         image_features = self.image_to_features(image)
 
-        medium = self.mediums.rank(image_features, 1)[0]
+        if self.config.load_mediums:
+            medium = self.mediums.rank(image_features, 1)[0]
         if self.config.load_artists:
             artist = self.artists.rank(image_features, 1)[0]
         if self.config.load_trendings:
             trending = self.trendings.rank(image_features, 1)[0]
-        movement = self.movements.rank(image_features, 1)[0]
+        if self.config.load_movements:
+            movement = self.movements.rank(image_features, 1)[0]
         flaves = ", ".join(self.flavors.rank(image_features, max_flavors))
 
         # Remove Flavorflav items if disabled in config
@@ -187,12 +189,19 @@ class Interrogator():
         else:
             prompt = f"{caption}, {medium} {artist}, {trending}, {movement}, {flaves}"
 
+        # Remove extra commas and spaces
+        prompt = re.sub(r', , ,', ', ', prompt)
+        prompt = re.sub(r', ,', ', ', prompt)
+        prompt = re.sub(r' ,', ', ', prompt)
+        prompt = re.sub(r' +', ' ', prompt)
+
         return _truncate_to_fit(prompt, self.tokenize)
 
     def interrogate_fast(self, image: Image, max_flavors: int = 32) -> str:
         caption = self.generate_caption(image)
         image_features = self.image_to_features(image)
 
+        merged_options = []
         # Make this a configurable option
         if self.config.load_artists is True:
             merged_options.append(self.artists)
@@ -207,7 +216,6 @@ class Interrogator():
 
         # Move this into a merged list so we can append to it
         #merged_options = [self.artists, self.flavors, self.mediums, self.movements, self.trendings]
-        merged_options = []
         merged = _merge_tables(merged_options, self.config)
         #merged = _merge_tables([self.artists, self.flavors, self.mediums, self.movements, self.trendings], self.config)
         tops = merged.rank(image_features, max_flavors)
@@ -218,12 +226,14 @@ class Interrogator():
         image_features = self.image_to_features(image)
 
         flaves = self.flavors.rank(image_features, self.config.flavor_intermediate_count)
-        best_medium = self.mediums.rank(image_features, 1)[0]
+        if self.config.load_mediums:
+            best_medium = self.mediums.rank(image_features, 1)[0]
         if self.config.load_artists:
             best_artist = self.artists.rank(image_features, 1)[0]
         if self.config.load_trendings:
             best_trending = self.trendings.rank(image_features, 1)[0]
-        best_movement = self.movements.rank(image_features, 1)[0]
+        if self.config.load_movements:
+            best_movement = self.movements.rank(image_features, 1)[0]
 
         # Remove Flavorflav items if disabled in config
         if self.config.load_artists is False:
@@ -292,6 +302,8 @@ class Interrogator():
                 break
             extended_flavors.remove(flave)
 
+        best_prompt = re.sub(r', ,+', ', ', best_prompt)
+        best_prompt = re.sub(r' +', ' ', best_prompt)
         return best_prompt
 
     def rank_top(self, image_features: torch.Tensor, text_array: List[str]) -> str:

@@ -18,6 +18,27 @@ def inference(ci, image, mode):
     else:
         return ci.interrogate_fast(image)
 
+# Save function to make it a little easier to save files
+def save_file(file_path, data, mode='w', encoding='utf-8', debug=False):
+    """ Function to save a file, defaults to write mode """
+    if not debug:
+        with open(file_path, mode, encoding=encoding) as f:
+            f.write(data)
+        print(f'File saved to {file_path}')
+    else:
+        print('Debug mode, file not saved')
+
+# Save function to make it a little easier to prepend files
+def save_file_prepend(file_path, data, mode='r+', encoding='utf-8', debug=False):
+    """ Function to save with 'r+' at the start of a file seek(0) """
+    if not debug:
+        with open(file_path, mode, encoding=encoding) as f:
+            f.seek(0)
+            f.write(data)
+        print(f'File saved to {file_path}')
+    else:
+        print('Debug mode, file not saved')
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -27,6 +48,8 @@ def main():
     parser.add_argument('-i', '--image', help='image file or url')
     parser.add_argument('-m', '--mode', default='best', help='best, classic, or fast')
     parser.add_argument('-o', '--output-type', default='captions', help='captions, csv', choices=['captions', 'csv'])
+    parser.add_argument('-wm', '--write-mode', default='write', help='file write mode, append files or write', choices=['write', 'append'])
+
     # Additional BLIP settings based on config function
     parser.add_argument("-bis", "--blip_image_eval_size", type=int, default=384, help="Size of image for evaluation")
     parser.add_argument("-bml", "--blip_max_length", type=int, default=32, help="Maximum length of BLIP model output")

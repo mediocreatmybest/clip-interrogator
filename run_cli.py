@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 import argparse
 import csv
-import open_clip
+# import glob # Not used yet. Need to do this later, I'm tired. zzz
 import os
+
+import open_clip
 import requests
 import torch
 from PIL import Image
-from clip_interrogator import Interrogator, Config
+
+from clip_interrogator import Config, Interrogator
 
 
 def inference(ci, image, mode):
@@ -23,7 +26,12 @@ def save_file(file_path, data, mode='w', encoding='utf-8', debug=False):
     """ Function to save a file, defaults to write mode """
     if not debug:
         with open(file_path, mode, encoding=encoding) as f:
-            f.write(data)
+            # crate seperator for append
+            if mode == 'w':
+                f.write(data)
+            elif mode == 'a':
+                data = ', ' + data
+                f.write(data)
         print(f'File saved to {file_path}')
     else:
         print('Debug mode, file not saved')
@@ -32,43 +40,76 @@ def save_file(file_path, data, mode='w', encoding='utf-8', debug=False):
 def save_file_prepend(file_path, data, mode='r+', encoding='utf-8', debug=False):
     """ Function to save with 'r+' at the start of a file seek(0) """
     if not debug:
-        with open(file_path, mode, encoding=encoding) as f:
-            f.seek(0)
-            f.write(data)
-        print(f'File saved to {file_path}')
+        # Should catch missing files to prevent script stopping
+        if not os.path.exists(file_path):
+            with open(file_path, 'w', encoding=encoding) as f:
+                f.write(data)
+                return True
+        else:
+            with open(file_path, mode, encoding=encoding) as f:
+                existing_data = f.read()
+                f.seek(0)
+                f.write(data + ', ' + existing_data)
+            print(f'File saved to {file_path}')
+            return True
     else:
         print('Debug mode, file not saved')
-
+        return False
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--clip', default='ViT-L-14/openai', metavar='ViT-H-14/laion2b_s32b_b79k', help='name of CLIP model to use')
-    parser.add_argument('-d', '--device', default='auto', help='device to use (auto, cuda or cpu)')
-    parser.add_argument('-f', '--folder', help='path to folder of images')
-    parser.add_argument('-i', '--image', help='image file or url')
-    parser.add_argument('-m', '--mode', default='best', help='best, classic, or fast')
-    parser.add_argument('-o', '--output-type', default='captions', help='captions, csv', choices=['captions', 'csv'])
-    parser.add_argument('-wm', '--write-mode', default='write', help='file write mode, append files or write', choices=['write', 'append'])
+    parser.add_argument('-c', '--clip', default='ViT-L-14/openai', metavar='ViT-H-14/laion2b_s32b_b79k',
+                        help='name of CLIP model to use')
+    parser.add_argument('-d', '--device', default='auto',
+                        help='device to use (auto, cuda or cpu)')
+    parser.add_argument('-f', '--folder',
+                        help='path to folder of images')
+    parser.add_argument('-i', '--image',
+                        help='image file or url')
+    parser.add_argument('-m', '--mode', default='best',
+                        help='best, classic, or fast')
+    parser.add_argument('-o', '--output-type', default='captions',
+                        help='captions, csv', choices=['captions', 'csv'])
+    parser.add_argument('-wm', '--write-mode', default='write',
+                        help='file write mode (only for caption type), append files or write', choices=['write', 'append', 'prepend'])
 
     # Additional BLIP settings based on config function
-    parser.add_argument("-bis", "--blip_image_eval_size", type=int, default=384, help="Size of image for evaluation")
-    parser.add_argument("-bml", "--blip_max_length", type=int, default=32, help="Maximum length of BLIP model output")
-    parser.add_argument("-bmt", "--blip_model_type", default='large', choices=['base','large'], help="Type of BLIP model ('base' or 'large')")
-    parser.add_argument("-bb", "--blip_num_beams", type=int, default=8, help="Number of beams for BLIP model")
-    parser.add_argument("-bo", "--blip_offload", type=bool, default=True, help="Offload BLIP model to CPU")
+    parser.add_argument("-bis", "--blip_image_eval_size", type=int, default=384,
+                        help="Size of image for evaluation")
+    parser.add_argument("-bml", "--blip_max_length", type=int, default=32,
+                        help="Maximum length of BLIP model output")
+    parser.add_argument("-bmt", "--blip_model_type", default='large', choices=['base','large'],
+                        help="Type of BLIP model ('base' or 'large')")
+    parser.add_argument("-bb", "--blip_num_beams", type=int, default=8,
+                        help="Number of beams for BLIP model")
+    parser.add_argument("-bo", "--blip_offload", type=bool, default=True,
+                        help="Offload BLIP model to CPU")
     # Additonal Interrogator settings based on config function
-    parser.add_argument("-flc", "--flavor_intermediate_count", type=int, default=2048, help="Intermediate count for flavors, lowest value seems to be 4")
-    parser.add_argument("-q", "--quiet", type=bool, default=False, help="Whether to show progress bars")
+    parser.add_argument("-flc", "--flavor_intermediate_count", type=int, default=2048,
+                        help="Intermediate count for flavors, lowest value seems to be 4")
+    parser.add_argument("-q", "--quiet", type=bool, default=False,
+                        help="Whether to show progress bars")
     # Additional Options to disable flavors, artists, trendings, movements, mediums
     # Flavs broken.
     #parser.add_argument("-df", "--disable-flavs", action="store_false", help="Disables flavors within captions")
-    parser.add_argument("-da", "--disable-artists", action="store_false", help="Disables artists within captions")
-    parser.add_argument("-dm", "--disable-mediums", action="store_false", help="Disables mediums within captions")
-    parser.add_argument("-dmov", "--disable-movements", action="store_false", help="Disables movements within captions")
-    parser.add_argument("-dt", "--disable-trends", action="store_false", help="Disables trendings within captions")
+    parser.add_argument("-da", "--disable-artists", action="store_false",
+                        help="Disables artists within captions")
+    parser.add_argument("-dm", "--disable-mediums", action="store_false",
+                        help="Disables mediums within captions")
+    parser.add_argument("-dmov", "--disable-movements", action="store_false",
+                        help="Disables movements within captions")
+    parser.add_argument("-dt", "--disable-trends", action="store_false",
+                        help="Disables trendings within captions")
 
 
     args = parser.parse_args()
+
+    # Set write mode for save function
+    if args.write_mode == 'write':
+        wmode = 'w'
+    elif args.write_mode == 'append':
+        wmode = 'a'
+
     if not args.folder and not args.image:
         parser.print_help()
         exit(1)
@@ -130,6 +171,7 @@ def main():
             exit(1)
 
         files = [f for f in os.listdir(args.folder) if f.endswith('.jpg') or  f.endswith('.png')]
+
         prompts = []
         for file in files:
             image = Image.open(os.path.join(args.folder, file)).convert('RGB')
@@ -145,16 +187,27 @@ def main():
                 for file, prompt in zip(files, prompts):
                     w.writerow([file, prompt])
 
-            print(f"\n\n\n\nGenerated {len(prompts)} and saved to {csv_path}, enjoy!")
+            print(f"\n\n\nGenerated {len(prompts)} and saved to {csv_path}, enjoy!")
+
 
         elif args.output_type == 'captions':
             for file, prompt in zip(files, prompts):
                 file_name = os.path.splitext(file)[0] + '.txt'
                 file_path = os.path.join(args.folder, file_name)
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(prompt)
 
-            print(f"\n\n\n\nGenerated {len(prompts)} prompts and saved to {args.folder}, enjoy!")
+                if args.write_mode == 'write' or args.write_mode == 'append':
+                    save_file(file_path=file_path, data=prompt, mode=wmode)
+                elif args.write_mode == 'prepend':
+                    save_file_prepend(file_path=file_path, data=prompt)
+
+
+                #with open(file_path, 'w', encoding='utf-8') as f:
+                #    f.write(prompt)
+
+            print(f"\n\n\nGenerated {len(prompts)} prompts and saved to {args.folder}, enjoy!")
 
 if __name__ == "__main__":
     main()
+
+
+

@@ -114,7 +114,7 @@ def main():
             prompts.append(prompt)
             print(prompt)
 
-        if args.output-type == 'csv':
+        if args.output_type == 'csv':
             csv_path = os.path.join(args.folder, 'desc.csv')
             with open(csv_path, 'w', encoding='utf-8', newline='') as f:
                 w = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
@@ -124,7 +124,7 @@ def main():
 
             print(f"\n\n\n\nGenerated {len(prompts)} and saved to {csv_path}, enjoy!")
 
-        elif args.output-type == 'captions':
+        elif args.output_type == 'captions':
             for file, prompt in zip(files, prompts):
                 file_name = os.path.splitext(file)[0] + '.txt'
                 file_path = os.path.join(args.folder, file_name)

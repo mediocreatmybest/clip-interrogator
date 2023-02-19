@@ -58,8 +58,8 @@ def save_file_prepend(file_path, data, mode='r+', encoding='utf-8', debug=False)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--clip', default='ViT-L-14/openai', metavar='ViT-H-14/laion2b_s32b_b79k',
-                        help='name of CLIP model to use')
+    parser.add_argument('-c', '--clip', default='ViT-H-14/laion2b_s32b_b79k', metavar='ViT-H-14/laion2b_s32b_b79k',
+                        help='name of CLIP model to use, ViT-L-14/openai (SD1) or ViT-H-14/laion2b_s32b_b79k (SD2)')
     parser.add_argument('-d', '--device', default='auto',
                         help='device to use (auto, cuda or cpu)')
     parser.add_argument('-f', '--folder',
@@ -80,17 +80,17 @@ def main():
                         help="Maximum length of BLIP model output")
     parser.add_argument("-bmt", "--blip_model_type", default='large', choices=['base','large'],
                         help="Type of BLIP model ('base' or 'large')")
-    parser.add_argument("-bb", "--blip_num_beams", type=int, default=8,
+    parser.add_argument("-bb", "--blip_num_beams", type=int, default=32,
                         help="Number of beams for BLIP model")
     parser.add_argument("-bo", "--blip_offload", type=bool, default=True,
                         help="Offload BLIP model to CPU")
     # Additonal Interrogator settings based on config function
     parser.add_argument("-flc", "--flavor_intermediate_count", type=int, default=2048,
-                        help="Intermediate count for flavors, lowest value seems to be 4")
-    parser.add_argument("-cs", "--chunk_size", type=int, default=2048,
+                        help="Intermediate count for flavors, lowest value seems to be 10")
+    parser.add_argument("-cs", "--chunk_size", type=int, default=512,
                         help="CLIP chunk_size, smaller uses less vram")
     parser.add_argument("-q", "--quiet", type=bool, default=False,
-                        help="Whether to show progress bars")
+                        help="Disables progress bars")
     # Additional Options to disable flavors, artists, trendings, movements, mediums
     # Flavs broken.
     #parser.add_argument("-df", "--disable-flavs", action="store_false", help="Disables flavors within captions")

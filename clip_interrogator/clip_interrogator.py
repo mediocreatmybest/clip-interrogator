@@ -5,6 +5,7 @@ import numpy as np
 import open_clip
 import os
 import pickle
+import requests
 import time
 import torch
 import re
@@ -17,10 +18,31 @@ from torchvision.transforms.functional import InterpolationMode
 from tqdm import tqdm
 from typing import List
 
+from safetensors.numpy import load_file, save_file
+
 BLIP_MODELS = {
     'base': 'https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_base_caption_capfilt_large.pth',
     'large': 'https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large_caption.pth'
 }
+
+CACHE_URLS_VITL = [
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_artists.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_flavors.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_mediums.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_movements.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_negative.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_trendings.safetensors',
+]
+
+CACHE_URLS_VITH = [
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_artists.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_flavors.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_mediums.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_movements.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_negative.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_trendings.safetensors',
+]
+
 
 @dataclass
 class Config:
@@ -41,8 +63,9 @@ class Config:
     clip_model_path: str = None
 
     # interrogator settings
-    cache_path: str = 'cache'
-    chunk_size: int = 2048
+    cache_path: str = 'cache'   # path to store cached text embeddings
+    download_cache: bool = True # when true, cached embeds are downloaded from huggingface
+    chunk_size: int = 2048      # batch size for CLIP, use smaller for lower VRAM
     data_path: str = os.path.join(os.path.dirname(__file__), 'data')
     device: str = ("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
     flavor_intermediate_count: int = 2048
@@ -73,12 +96,28 @@ class Interrogator():
                 med_config=med_config
             )
             blip_model.eval()
-            blip_model = blip_model.to(config.device)
+            if not self.config.blip_offload:
+                blip_model = blip_model.to(config.device)
             self.blip_model = blip_model
         else:
             self.blip_model = config.blip_model
 
         self.load_clip_model()
+
+    def download_cache(self, clip_model_name: str):
+        if clip_model_name == 'ViT-L-14/openai':
+            cache_urls = CACHE_URLS_VITL
+        elif clip_model_name == 'ViT-H-14/laion2b_s32b_b79k':
+            cache_urls = CACHE_URLS_VITH
+        else:
+            # text embeddings will be precomputed and cached locally
+            return
+
+        os.makedirs(self.config.cache_path, exist_ok=True)
+        for url in cache_urls:
+            filepath = os.path.join(self.config.cache_path, url.split('/')[-1])
+            if not os.path.exists(filepath):
+                _download_file(url, filepath, quiet=self.config.quiet)
 
     def load_clip_model(self):
         start_time = time.time()
@@ -103,6 +142,7 @@ class Interrogator():
             self.clip_preprocess = config.clip_preprocess
         self.tokenize = open_clip.get_tokenizer(clip_model_name)
 
+        # Stop these loading if we're not using them
         if self.config.load_trendings:
             sites = ['Artstation', 'behance', 'cg society', 'cgsociety', 'deviantart', 'dribble', 'flickr', 'instagram', 'pexels', 'pinterest', 'pixabay', 'pixiv', 'polycount', 'reddit', 'shutterstock', 'tumblr', 'unsplash', 'zbrush central']
             trending_list = [site for site in sites]
@@ -115,6 +155,12 @@ class Interrogator():
             raw_artists = _load_list(config.data_path, 'artists.txt')
             artists = [f"by {a}" for a in raw_artists]
             artists.extend([f"inspired by {a}" for a in raw_artists])
+
+        if config.download_cache:
+            self.download_cache(config.clip_model_name)
+
+        # Make these options loadable from config with: if self.config.load_xxx
+        if self.config.load_artists:
             self.artists = LabelTable(artists, "artists", self.clip_model, self.tokenize, config)
         self.flavors = LabelTable(_load_list(config.data_path, 'flavors.txt'), "flavors", self.clip_model, self.tokenize, config)
         if self.config.load_mediums:
@@ -123,11 +169,54 @@ class Interrogator():
             self.movements = LabelTable(_load_list(config.data_path, 'movements.txt'), "movements", self.clip_model, self.tokenize, config)
         if self.config.load_trendings:
             self.trendings = LabelTable(trending_list, "trendings", self.clip_model, self.tokenize, config)
-
+        self.negative = LabelTable(_load_list(config.data_path, 'negative.txt'), "negative", self.clip_model, self.tokenize, config)
 
         end_time = time.time()
         if not config.quiet:
             print(f"Loaded CLIP model and data in {end_time-start_time:.2f} seconds.")
+
+    def chain(
+        self,
+        image_features: torch.Tensor,
+        phrases: List[str],
+        best_prompt: str="",
+        best_sim: float=0,
+        min_count: int=8,
+        max_count: int=32,
+        desc="Chaining",
+        reverse: bool=False
+    ) -> str:
+        phrases = set(phrases)
+        if not best_prompt:
+            best_prompt = self.rank_top(image_features, [f for f in phrases], reverse=reverse)
+            best_sim = self.similarity(image_features, best_prompt)
+            phrases.remove(best_prompt)
+        curr_prompt, curr_sim = best_prompt, best_sim
+
+        def check(addition: str, idx: int) -> bool:
+            nonlocal best_prompt, best_sim, curr_prompt, curr_sim
+            prompt = curr_prompt + ", " + addition
+            sim = self.similarity(image_features, prompt)
+            if reverse:
+                sim = -sim
+
+            if sim > best_sim:
+                best_prompt, best_sim = prompt, sim
+            if sim > curr_sim or idx < min_count:
+                curr_prompt, curr_sim = prompt, sim
+                return True
+            return False
+
+        for idx in tqdm(range(max_count), desc=desc, disable=self.config.quiet):
+            best = self.rank_top(image_features, [f"{curr_prompt}, {f}" for f in phrases], reverse=reverse)
+            flave = best[len(curr_prompt)+2:]
+            if not check(flave, idx):
+                break
+            if _prompt_at_max_len(curr_prompt, self.tokenize):
+                break
+            phrases.remove(flave)
+
+        return best_prompt
 
     def generate_caption(self, pil_image: Image) -> str:
         if self.config.blip_offload:
@@ -159,6 +248,8 @@ class Interrogator():
         return image_features
 
     def interrogate_classic(self, image: Image, max_flavors: int=3) -> str:
+        """Classic mode creates a prompt in a standard format first describing the image,
+        then listing the artist, trending, movement, and flavor text modifiers."""
         caption = self.generate_caption(image)
         image_features = self.image_to_features(image)
 
@@ -198,11 +289,12 @@ class Interrogator():
         return _truncate_to_fit(prompt, self.tokenize)
 
     def interrogate_fast(self, image: Image, max_flavors: int = 32) -> str:
-        caption = self.generate_caption(image)
-        image_features = self.image_to_features(image)
+        """Fast mode simply adds the top ranked terms after a caption. It generally results in
+        better similarity between generated prompt and image than classic mode, but the prompts
+        are less readable."""
 
-        merged_options = []
         # Make this a configurable option
+        merged_options = []
         if self.config.load_artists is True:
             merged_options.append(self.artists)
         if self.config.load_flavors is True:
@@ -214,104 +306,58 @@ class Interrogator():
         if self.config.load_trendings is True:
             merged_options.append(self.trendings)
 
-        # Move this into a merged list so we can append to it
-        #merged_options = [self.artists, self.flavors, self.mediums, self.movements, self.trendings]
+        caption = self.generate_caption(image)
+        image_features = self.image_to_features(image)
+        # Move this to get details from merged_options instead
         merged = _merge_tables(merged_options, self.config)
-        #merged = _merge_tables([self.artists, self.flavors, self.mediums, self.movements, self.trendings], self.config)
         tops = merged.rank(image_features, max_flavors)
         return _truncate_to_fit(caption + ", " + ", ".join(tops), self.tokenize)
 
-    def interrogate(self, image: Image, max_flavors: int=32) -> str:
+    def interrogate_negative(self, image: Image, max_flavors: int = 32) -> str:
+        """Negative mode chains together the most dissimilar terms to the image. It can be used
+        to help build a negative prompt to pair with the regular positive prompt and often
+        improve the results of generated images particularly with Stable Diffusion 2."""
+        image_features = self.image_to_features(image)
+        flaves = self.flavors.rank(image_features, self.config.flavor_intermediate_count, reverse=True)
+        flaves = flaves + self.negative.labels
+        return self.chain(image_features, flaves, max_count=max_flavors, reverse=True, desc="Negative chain")
+
+    def interrogate(self, image: Image, min_flavors: int=8, max_flavors: int=32) -> str:
         caption = self.generate_caption(image)
         image_features = self.image_to_features(image)
 
-        flaves = self.flavors.rank(image_features, self.config.flavor_intermediate_count)
-        if self.config.load_mediums:
-            best_medium = self.mediums.rank(image_features, 1)[0]
-        if self.config.load_artists:
-            best_artist = self.artists.rank(image_features, 1)[0]
-        if self.config.load_trendings:
-            best_trending = self.trendings.rank(image_features, 1)[0]
-        if self.config.load_movements:
-            best_movement = self.movements.rank(image_features, 1)[0]
-
-        # Remove Flavorflav items if disabled in config
-        if self.config.load_artists is False:
-            best_artist = ""
-        if self.config.load_flavors is False:
-            flaves = ""
-        if self.config.load_mediums is False:
-            best_medium = ""
-        if self.config.load_movements is False:
-            best_movement = ""
-        if self.config.load_trendings is False:
-            best_trending = ""
-
-
-        best_prompt = caption
-        best_sim = self.similarity(image_features, best_prompt)
-
-        def check(addition: str) -> bool:
-            nonlocal best_prompt, best_sim
-            prompt = best_prompt + ", " + addition
-            sim = self.similarity(image_features, prompt)
-            if sim > best_sim:
-                best_sim = sim
-                best_prompt = prompt
-                return True
-            return False
-
-        def check_multi_batch(opts: List[str]):
-            nonlocal best_prompt, best_sim
-            prompts = []
-            for i in range(2**len(opts)):
-                prompt = best_prompt
-                for bit in range(len(opts)):
-                    if i & (1 << bit):
-                        #prompt += ", " + opts[bit]
-                        # Convert the list to a string with .join
-                        prompt += ", " + ", ".join(opts[bit])
-                prompts.append(prompt)
-
-            t = LabelTable(prompts, None, self.clip_model, self.tokenize, self.config)
-            best_prompt = t.rank(image_features, 1)[0]
-            best_sim = self.similarity(image_features, best_prompt)
-
-        best_options = []
-        # Append the best of each table
-        if self.config.load_mediums is True:
-            best_options.append(best_medium)
+        # Make this a configurable option
+        merged_options = []
         if self.config.load_artists is True:
-            best_options.append(best_artist)
-        if self.config.load_trendings is True:
-            best_options.append(best_trending)
+            merged_options.append(self.artists)
+        if self.config.load_flavors is True:
+            merged_options.append(self.flavors)
+        if self.config.load_mediums is True:
+            merged_options.append(self.mediums)
         if self.config.load_movements is True:
-            best_options.append(best_movement)
+            merged_options.append(self.movements)
+        if self.config.load_trendings is True:
+            merged_options.append(self.trendings)
 
-        # Move this into a list so we can append to it
-        check_multi_batch([best_options])
-        #check_multi_batch([best_medium, best_artist, best_trending, best_movement])
+        merged = _merge_tables(merged_options, self.config)
+        flaves = merged.rank(image_features, self.config.flavor_intermediate_count)
 
-        extended_flavors = set(flaves)
-        for _ in tqdm(range(max_flavors), desc="Flavor chain", disable=self.config.quiet):
-            best = self.rank_top(image_features, [f"{best_prompt}, {f}" for f in extended_flavors])
-            flave = best[len(best_prompt)+2:]
-            if not check(flave):
-                break
-            if _prompt_at_max_len(best_prompt, self.tokenize):
-                break
-            extended_flavors.remove(flave)
+        best_prompt, best_sim = caption, self.similarity(image_features, caption)
+        best_prompt = self.chain(image_features, flaves, best_prompt, best_sim, min_count=min_flavors, max_count=max_flavors, desc="Flavor chain")
 
-        best_prompt = re.sub(r', ,+', ', ', best_prompt)
-        best_prompt = re.sub(r' +', ' ', best_prompt)
-        return best_prompt
+        fast_prompt = self.interrogate_fast(image, max_flavors)
+        classic_prompt = self.interrogate_classic(image, max_flavors)
+        candidates = [caption, classic_prompt, fast_prompt, best_prompt]
+        return candidates[np.argmax(self.similarities(image_features, candidates))]
 
-    def rank_top(self, image_features: torch.Tensor, text_array: List[str]) -> str:
+    def rank_top(self, image_features: torch.Tensor, text_array: List[str], reverse: bool=False) -> str:
         text_tokens = self.tokenize([text for text in text_array]).to(self.device)
         with torch.no_grad(), torch.cuda.amp.autocast():
             text_features = self.clip_model.encode_text(text_tokens)
             text_features /= text_features.norm(dim=-1, keepdim=True)
             similarity = text_features @ image_features.T
+            if reverse:
+                similarity = -similarity
         return text_array[similarity.argmax().item()]
 
     def similarity(self, image_features: torch.Tensor, text: str) -> float:
@@ -321,6 +367,14 @@ class Interrogator():
             text_features /= text_features.norm(dim=-1, keepdim=True)
             similarity = text_features @ image_features.T
         return similarity[0][0].item()
+
+    def similarities(self, image_features: torch.Tensor, text_array: List[str]) -> List[float]:
+        text_tokens = self.tokenize([text for text in text_array]).to(self.device)
+        with torch.no_grad(), torch.cuda.amp.autocast():
+            text_features = self.clip_model.encode_text(text_tokens)
+            text_features /= text_features.norm(dim=-1, keepdim=True)
+            similarity = text_features @ image_features.T
+        return similarity.T[0].tolist()
 
 
 class LabelTable():
@@ -333,21 +387,8 @@ class LabelTable():
         self.tokenize = tokenize
 
         hash = hashlib.sha256(",".join(labels).encode()).hexdigest()
-
-        cache_filepath = None
-        if config.cache_path is not None and desc is not None:
-            os.makedirs(config.cache_path, exist_ok=True)
-            sanitized_name = config.clip_model_name.replace('/', '_').replace('@', '_')
-            cache_filepath = os.path.join(config.cache_path, f"{sanitized_name}_{desc}.pkl")
-            if desc is not None and os.path.exists(cache_filepath):
-                with open(cache_filepath, 'rb') as f:
-                    try:
-                        data = pickle.load(f)
-                        if data.get('hash') == hash:
-                            self.labels = data['labels']
-                            self.embeds = data['embeds']
-                    except Exception as e:
-                        print(f"Error loading cached table {desc}: {e}")
+        sanitized_name = self.config.clip_model_name.replace('/', '_').replace('@', '_')
+        self._load_cached(desc, hash, sanitized_name)
 
         if len(self.labels) != len(self.embeds):
             self.embeds = []
@@ -361,29 +402,62 @@ class LabelTable():
                 for i in range(text_features.shape[0]):
                     self.embeds.append(text_features[i])
 
-            if cache_filepath is not None:
-                with open(cache_filepath, 'wb') as f:
-                    pickle.dump({
-                        "labels": self.labels,
-                        "embeds": self.embeds,
-                        "hash": hash,
-                        "model": config.clip_model_name
-                    }, f)
+            if desc and self.config.cache_path:
+                os.makedirs(self.config.cache_path, exist_ok=True)
+                cache_filepath = os.path.join(self.config.cache_path, f"{sanitized_name}_{desc}.safetensors")
+                tensors = {
+                    "embeds": np.stack(self.embeds),
+                    "hash": np.array([ord(c) for c in hash], dtype=np.int8)
+                }
+                save_file(tensors, cache_filepath)
 
         if self.device == 'cpu' or self.device == torch.device('cpu'):
             self.embeds = [e.astype(np.float32) for e in self.embeds]
 
-    def _rank(self, image_features: torch.Tensor, text_embeds: torch.Tensor, top_count: int=1) -> str:
+    def _load_cached(self, desc:str, hash:str, sanitized_name:str) -> bool:
+        if self.config.cache_path is None or desc is None:
+            return False
+
+        # load from old pkl format if it exists
+        cached_pkl = os.path.join(self.config.cache_path, f"{sanitized_name}_{desc}.pkl")
+        if os.path.exists(cached_pkl):
+            with open(cached_pkl, 'rb') as f:
+                try:
+                    data = pickle.load(f)
+                    if data.get('hash') == hash:
+                        self.labels = data['labels']
+                        self.embeds = data['embeds']
+                        return True
+                except Exception as e:
+                    print(f"Error loading cached table {desc}: {e}")
+
+        # load from new safetensors format if it exists
+        cached_safetensors = os.path.join(self.config.cache_path, f"{sanitized_name}_{desc}.safetensors")
+        if os.path.exists(cached_safetensors):
+            tensors = load_file(cached_safetensors)
+            if 'hash' in tensors and 'embeds' in tensors:
+                if np.array_equal(tensors['hash'], np.array([ord(c) for c in hash], dtype=np.int8)):
+                    self.embeds = tensors['embeds']
+                    if len(self.embeds.shape) == 2:
+                        self.embeds = [self.embeds[i] for i in range(self.embeds.shape[0])]
+                    return True
+
+        return False
+
+
+    def _rank(self, image_features: torch.Tensor, text_embeds: torch.Tensor, top_count: int=1, reverse: bool=False) -> str:
         top_count = min(top_count, len(text_embeds))
         text_embeds = torch.stack([torch.from_numpy(t) for t in text_embeds]).to(self.device)
         with torch.cuda.amp.autocast():
             similarity = image_features @ text_embeds.T
+            if reverse:
+                similarity = -similarity
         _, top_labels = similarity.float().cpu().topk(top_count, dim=-1)
         return [top_labels[0][i].numpy() for i in range(top_count)]
 
-    def rank(self, image_features: torch.Tensor, top_count: int=1) -> List[str]:
+    def rank(self, image_features: torch.Tensor, top_count: int=1, reverse: bool=False) -> List[str]:
         if len(self.labels) <= self.chunk_size:
-            tops = self._rank(image_features, self.embeds, top_count=top_count)
+            tops = self._rank(image_features, self.embeds, top_count=top_count, reverse=reverse)
             return [self.labels[i] for i in tops]
 
         num_chunks = int(math.ceil(len(self.labels)/self.chunk_size))
@@ -393,13 +467,25 @@ class LabelTable():
         for chunk_idx in tqdm(range(num_chunks), disable=self.config.quiet):
             start = chunk_idx*self.chunk_size
             stop = min(start+self.chunk_size, len(self.embeds))
-            tops = self._rank(image_features, self.embeds[start:stop], top_count=keep_per_chunk)
+            tops = self._rank(image_features, self.embeds[start:stop], top_count=keep_per_chunk, reverse=reverse)
             top_labels.extend([self.labels[start+i] for i in tops])
             top_embeds.extend([self.embeds[start+i] for i in tops])
 
         tops = self._rank(image_features, top_embeds, top_count=top_count)
         return [top_labels[i] for i in tops]
 
+
+def _download_file(url: str, filepath: str, chunk_size: int = 64*1024, quiet: bool = False):
+    r = requests.get(url, stream=True)
+    file_size = int(r.headers.get("Content-Length", 0))
+    filename = url.split("/")[-1]
+    progress = tqdm(total=file_size, unit="B", unit_scale=True, desc=filename, disable=quiet)
+    with open(filepath, "wb") as f:
+        for chunk in r.iter_content(chunk_size=chunk_size):
+            if chunk:
+                f.write(chunk)
+                progress.update(len(chunk))
+    progress.close()
 
 def _load_list(data_path: str, filename: str) -> List[str]:
     with open(os.path.join(data_path, filename), 'r', encoding='utf-8', errors='replace') as f:

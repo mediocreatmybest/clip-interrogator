@@ -87,6 +87,8 @@ def main():
     # Additonal Interrogator settings based on config function
     parser.add_argument("-flc", "--flavor_intermediate_count", type=int, default=2048,
                         help="Intermediate count for flavors, lowest value seems to be 4")
+    parser.add_argument("-cs", "--chunk_size", type=int, default=2048,
+                        help="CLIP chunk_size, smaller uses less vram")
     parser.add_argument("-q", "--quiet", type=bool, default=False,
                         help="Whether to show progress bars")
     # Additional Options to disable flavors, artists, trendings, movements, mediums
@@ -137,6 +139,7 @@ def main():
     config = Config(
         device=device,
         clip_model_name=args.clip,
+        chunk_size=args.chunk_size,
         blip_image_eval_size=args.blip_image_eval_size,
         blip_max_length=args.blip_max_length,
         blip_model_type=args.blip_model_type,

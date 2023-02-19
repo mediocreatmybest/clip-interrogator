@@ -8,7 +8,6 @@ import pickle
 import requests
 import time
 import torch
-import re
 
 from dataclasses import dataclass
 from blip.models.blip import blip_decoder, BLIP_Decoder
@@ -18,29 +17,33 @@ from torchvision.transforms.functional import InterpolationMode
 from tqdm import tqdm
 from typing import List
 
+from safetensors.numpy import load_file, save_file
+
 BLIP_MODELS = {
     'base': 'https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_base_caption_capfilt_large.pth',
     'large': 'https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large_caption.pth'
 }
 
 CACHE_URLS_VITL = [
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_artists.pkl',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_flavors.pkl',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_mediums.pkl',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_movements.pkl',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_trendings.pkl',
-]
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_artists.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_flavors.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_mediums.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_movements.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_negative.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_trendings.safetensors',
+] 
 
 CACHE_URLS_VITH = [
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_artists.pkl',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_flavors.pkl',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_mediums.pkl',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_movements.pkl',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_trendings.pkl',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_artists.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_flavors.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_mediums.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_movements.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_negative.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_trendings.safetensors',
 ]
 
 
-@dataclass
+@dataclass 
 class Config:
     # models can optionally be passed in directly
     blip_model: BLIP_Decoder = None
@@ -67,12 +70,6 @@ class Config:
     flavor_intermediate_count: int = 2048
     quiet: bool = False # when quiet progress bars are not shown
 
-    # load flavorflav options
-    load_artists: bool = True
-    load_flavors: bool = True
-    load_mediums: bool = True
-    load_movements: bool = True
-    load_trendings: bool = True
 
 class Interrogator():
     def __init__(self, config: Config):
@@ -87,12 +84,13 @@ class Interrogator():
             med_config = os.path.join(configs_path, 'med_config.json')
             blip_model = blip_decoder(
                 pretrained=BLIP_MODELS[config.blip_model_type],
-                image_size=config.blip_image_eval_size,
-                vit=config.blip_model_type,
+                image_size=config.blip_image_eval_size, 
+                vit=config.blip_model_type, 
                 med_config=med_config
             )
             blip_model.eval()
-            blip_model = blip_model.to(config.device)
+            if not self.config.blip_offload:
+                blip_model = blip_model.to(config.device)
             self.blip_model = blip_model
         else:
             self.blip_model = config.blip_model
@@ -124,8 +122,8 @@ class Interrogator():
 
             clip_model_name, clip_model_pretrained_name = config.clip_model_name.split('/', 2)
             self.clip_model, _, self.clip_preprocess = open_clip.create_model_and_transforms(
-                clip_model_name,
-                pretrained=clip_model_pretrained_name,
+                clip_model_name, 
+                pretrained=clip_model_pretrained_name, 
                 precision='fp16' if config.device == 'cuda' else 'fp32',
                 device=config.device,
                 jit=False,
@@ -137,33 +135,24 @@ class Interrogator():
             self.clip_preprocess = config.clip_preprocess
         self.tokenize = open_clip.get_tokenizer(clip_model_name)
 
-        # Stop these loading if we're not using them
-        if self.config.load_trendings:
-            sites = ['Artstation', 'behance', 'cg society', 'cgsociety', 'deviantart', 'dribble', 'flickr', 'instagram', 'pexels', 'pinterest', 'pixabay', 'pixiv', 'polycount', 'reddit', 'shutterstock', 'tumblr', 'unsplash', 'zbrush central']
-            trending_list = [site for site in sites]
-            trending_list.extend(["trending on "+site for site in sites])
-            trending_list.extend(["featured on "+site for site in sites])
-            trending_list.extend([site+" contest winner" for site in sites])
+        sites = ['Artstation', 'behance', 'cg society', 'cgsociety', 'deviantart', 'dribble', 'flickr', 'instagram', 'pexels', 'pinterest', 'pixabay', 'pixiv', 'polycount', 'reddit', 'shutterstock', 'tumblr', 'unsplash', 'zbrush central']
+        trending_list = [site for site in sites]
+        trending_list.extend(["trending on "+site for site in sites])
+        trending_list.extend(["featured on "+site for site in sites])
+        trending_list.extend([site+" contest winner" for site in sites])
 
-        # Make these options loadable from config with: if self.config.load_xxx
-        if self.config.load_artists:
-            raw_artists = _load_list(config.data_path, 'artists.txt')
-            artists = [f"by {a}" for a in raw_artists]
-            artists.extend([f"inspired by {a}" for a in raw_artists])
+        raw_artists = _load_list(config.data_path, 'artists.txt')
+        artists = [f"by {a}" for a in raw_artists]
+        artists.extend([f"inspired by {a}" for a in raw_artists])
 
         if config.download_cache:
             self.download_cache(config.clip_model_name)
 
-        # Make these options loadable from config with: if self.config.load_xxx
-        if self.config.load_artists:
-            self.artists = LabelTable(artists, "artists", self.clip_model, self.tokenize, config)
+        self.artists = LabelTable(artists, "artists", self.clip_model, self.tokenize, config)
         self.flavors = LabelTable(_load_list(config.data_path, 'flavors.txt'), "flavors", self.clip_model, self.tokenize, config)
-        if self.config.load_mediums:
-            self.mediums = LabelTable(_load_list(config.data_path, 'mediums.txt'), "mediums", self.clip_model, self.tokenize, config)
-        if self.config.load_movements:
-            self.movements = LabelTable(_load_list(config.data_path, 'movements.txt'), "movements", self.clip_model, self.tokenize, config)
-        if self.config.load_trendings:
-            self.trendings = LabelTable(trending_list, "trendings", self.clip_model, self.tokenize, config)
+        self.mediums = LabelTable(_load_list(config.data_path, 'mediums.txt'), "mediums", self.clip_model, self.tokenize, config)
+        self.movements = LabelTable(_load_list(config.data_path, 'movements.txt'), "movements", self.clip_model, self.tokenize, config)
+        self.trendings = LabelTable(trending_list, "trendings", self.clip_model, self.tokenize, config)
         self.negative = LabelTable(_load_list(config.data_path, 'negative.txt'), "negative", self.clip_model, self.tokenize, config)
 
         end_time = time.time()
@@ -171,14 +160,14 @@ class Interrogator():
             print(f"Loaded CLIP model and data in {end_time-start_time:.2f} seconds.")
 
     def chain(
-        self,
-        image_features: torch.Tensor,
-        phrases: List[str],
-        best_prompt: str="",
-        best_sim: float=0,
+        self, 
+        image_features: torch.Tensor, 
+        phrases: List[str], 
+        best_prompt: str="", 
+        best_sim: float=0, 
         min_count: int=8,
-        max_count: int=32,
-        desc="Chaining",
+        max_count: int=32, 
+        desc="Chaining", 
         reverse: bool=False
     ) -> str:
         phrases = set(phrases)
@@ -187,14 +176,14 @@ class Interrogator():
             best_sim = self.similarity(image_features, best_prompt)
             phrases.remove(best_prompt)
         curr_prompt, curr_sim = best_prompt, best_sim
-
+        
         def check(addition: str, idx: int) -> bool:
             nonlocal best_prompt, best_sim, curr_prompt, curr_sim
             prompt = curr_prompt + ", " + addition
             sim = self.similarity(image_features, prompt)
             if reverse:
                 sim = -sim
-
+            
             if sim > best_sim:
                 best_prompt, best_sim = prompt, sim
             if sim > curr_sim or idx < min_count:
@@ -225,10 +214,10 @@ class Interrogator():
 
         with torch.no_grad():
             caption = self.blip_model.generate(
-                gpu_image,
-                sample=False,
-                num_beams=self.config.blip_num_beams,
-                max_length=self.config.blip_max_length,
+                gpu_image, 
+                sample=False, 
+                num_beams=self.config.blip_num_beams, 
+                max_length=self.config.blip_max_length, 
                 min_length=5
             )
         if self.config.blip_offload:
@@ -243,74 +232,37 @@ class Interrogator():
         return image_features
 
     def interrogate_classic(self, image: Image, max_flavors: int=3) -> str:
-        """Classic mode creates a prompt in a standard format first describing the image,
+        """Classic mode creates a prompt in a standard format first describing the image, 
         then listing the artist, trending, movement, and flavor text modifiers."""
         caption = self.generate_caption(image)
         image_features = self.image_to_features(image)
 
-        if self.config.load_mediums:
-            medium = self.mediums.rank(image_features, 1)[0]
-        if self.config.load_artists:
-            artist = self.artists.rank(image_features, 1)[0]
-        if self.config.load_trendings:
-            trending = self.trendings.rank(image_features, 1)[0]
-        if self.config.load_movements:
-            movement = self.movements.rank(image_features, 1)[0]
+        medium = self.mediums.rank(image_features, 1)[0]
+        artist = self.artists.rank(image_features, 1)[0]
+        trending = self.trendings.rank(image_features, 1)[0]
+        movement = self.movements.rank(image_features, 1)[0]
         flaves = ", ".join(self.flavors.rank(image_features, max_flavors))
-
-        # Remove Flavorflav items if disabled in config
-        if self.config.load_artists is False:
-            artist = ""
-        if self.config.load_flavors is False:
-            flaves = ""
-        if self.config.load_mediums is False:
-            medium = ""
-        if self.config.load_movements is False:
-            movement = ""
-        if self.config.load_trendings is False:
-            trending = ""
 
         if caption.startswith(medium):
             prompt = f"{caption} {artist}, {trending}, {movement}, {flaves}"
         else:
             prompt = f"{caption}, {medium} {artist}, {trending}, {movement}, {flaves}"
 
-        # Remove extra commas and spaces
-        prompt = re.sub(r', , ,', ', ', prompt)
-        prompt = re.sub(r', ,', ', ', prompt)
-        prompt = re.sub(r' ,', ', ', prompt)
-        prompt = re.sub(r' +', ' ', prompt)
-
         return _truncate_to_fit(prompt, self.tokenize)
 
     def interrogate_fast(self, image: Image, max_flavors: int = 32) -> str:
-        """Fast mode simply adds the top ranked terms after a caption. It generally results in
+        """Fast mode simply adds the top ranked terms after a caption. It generally results in 
         better similarity between generated prompt and image than classic mode, but the prompts
         are less readable."""
-
-        # Make this a configurable option
-        merged_options = []
-        if self.config.load_artists is True:
-            merged_options.append(self.artists)
-        if self.config.load_flavors is True:
-            merged_options.append(self.flavors)
-        if self.config.load_mediums is True:
-            merged_options.append(self.mediums)
-        if self.config.load_movements is True:
-            merged_options.append(self.movements)
-        if self.config.load_trendings is True:
-            merged_options.append(self.trendings)
-
         caption = self.generate_caption(image)
         image_features = self.image_to_features(image)
-        # Move this to get details from merged_options instead
-        merged = _merge_tables(merged_options, self.config)
+        merged = _merge_tables([self.artists, self.flavors, self.mediums, self.movements, self.trendings], self.config)
         tops = merged.rank(image_features, max_flavors)
         return _truncate_to_fit(caption + ", " + ", ".join(tops), self.tokenize)
 
     def interrogate_negative(self, image: Image, max_flavors: int = 32) -> str:
         """Negative mode chains together the most dissimilar terms to the image. It can be used
-        to help build a negative prompt to pair with the regular positive prompt and often
+        to help build a negative prompt to pair with the regular positive prompt and often 
         improve the results of generated images particularly with Stable Diffusion 2."""
         image_features = self.image_to_features(image)
         flaves = self.flavors.rank(image_features, self.config.flavor_intermediate_count, reverse=True)
@@ -321,20 +273,7 @@ class Interrogator():
         caption = self.generate_caption(image)
         image_features = self.image_to_features(image)
 
-        # Make this a configurable option
-        merged_options = []
-        if self.config.load_artists is True:
-            merged_options.append(self.artists)
-        if self.config.load_flavors is True:
-            merged_options.append(self.flavors)
-        if self.config.load_mediums is True:
-            merged_options.append(self.mediums)
-        if self.config.load_movements is True:
-            merged_options.append(self.movements)
-        if self.config.load_trendings is True:
-            merged_options.append(self.trendings)
-
-        merged = _merge_tables(merged_options, self.config)
+        merged = _merge_tables([self.artists, self.flavors, self.mediums, self.movements, self.trendings], self.config)
         flaves = merged.rank(image_features, self.config.flavor_intermediate_count)
 
         best_prompt, best_sim = caption, self.similarity(image_features, caption)
@@ -382,21 +321,8 @@ class LabelTable():
         self.tokenize = tokenize
 
         hash = hashlib.sha256(",".join(labels).encode()).hexdigest()
-
-        cache_filepath = None
-        if config.cache_path is not None and desc is not None:
-            os.makedirs(config.cache_path, exist_ok=True)
-            sanitized_name = config.clip_model_name.replace('/', '_').replace('@', '_')
-            cache_filepath = os.path.join(config.cache_path, f"{sanitized_name}_{desc}.pkl")
-            if desc is not None and os.path.exists(cache_filepath):
-                with open(cache_filepath, 'rb') as f:
-                    try:
-                        data = pickle.load(f)
-                        if data.get('hash') == hash:
-                            self.labels = data['labels']
-                            self.embeds = data['embeds']
-                    except Exception as e:
-                        print(f"Error loading cached table {desc}: {e}")
+        sanitized_name = self.config.clip_model_name.replace('/', '_').replace('@', '_')
+        self._load_cached(desc, hash, sanitized_name)
 
         if len(self.labels) != len(self.embeds):
             self.embeds = []
@@ -410,18 +336,49 @@ class LabelTable():
                 for i in range(text_features.shape[0]):
                     self.embeds.append(text_features[i])
 
-            if cache_filepath is not None:
-                with open(cache_filepath, 'wb') as f:
-                    pickle.dump({
-                        "labels": self.labels,
-                        "embeds": self.embeds,
-                        "hash": hash,
-                        "model": config.clip_model_name
-                    }, f)
+            if desc and self.config.cache_path:
+                os.makedirs(self.config.cache_path, exist_ok=True)
+                cache_filepath = os.path.join(self.config.cache_path, f"{sanitized_name}_{desc}.safetensors")
+                tensors = {
+                    "embeds": np.stack(self.embeds),
+                    "hash": np.array([ord(c) for c in hash], dtype=np.int8)
+                }
+                save_file(tensors, cache_filepath)
 
         if self.device == 'cpu' or self.device == torch.device('cpu'):
             self.embeds = [e.astype(np.float32) for e in self.embeds]
 
+    def _load_cached(self, desc:str, hash:str, sanitized_name:str) -> bool:
+        if self.config.cache_path is None or desc is None:
+            return False
+
+        # load from old pkl format if it exists
+        cached_pkl = os.path.join(self.config.cache_path, f"{sanitized_name}_{desc}.pkl")
+        if os.path.exists(cached_pkl):
+            with open(cached_pkl, 'rb') as f:
+                try:
+                    data = pickle.load(f)
+                    if data.get('hash') == hash:
+                        self.labels = data['labels']
+                        self.embeds = data['embeds']
+                        return True
+                except Exception as e:
+                    print(f"Error loading cached table {desc}: {e}")
+
+        # load from new safetensors format if it exists
+        cached_safetensors = os.path.join(self.config.cache_path, f"{sanitized_name}_{desc}.safetensors")
+        if os.path.exists(cached_safetensors):
+            tensors = load_file(cached_safetensors)
+            if 'hash' in tensors and 'embeds' in tensors:
+                if np.array_equal(tensors['hash'], np.array([ord(c) for c in hash], dtype=np.int8)):
+                    self.embeds = tensors['embeds']
+                    if len(self.embeds.shape) == 2:
+                        self.embeds = [self.embeds[i] for i in range(self.embeds.shape[0])]
+                    return True
+
+        return False
+
+    
     def _rank(self, image_features: torch.Tensor, text_embeds: torch.Tensor, top_count: int=1, reverse: bool=False) -> str:
         top_count = min(top_count, len(text_embeds))
         text_embeds = torch.stack([torch.from_numpy(t) for t in text_embeds]).to(self.device)

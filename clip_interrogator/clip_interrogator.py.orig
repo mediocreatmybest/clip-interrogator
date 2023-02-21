@@ -24,7 +24,27 @@ BLIP_MODELS = {
     'large': 'https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large_caption.pth'
 }
 
+<<<<<<< HEAD
+CACHE_URLS_VITL = [
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_artists.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_flavors.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_mediums.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_movements.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_negative.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_trendings.safetensors',
+]
+
+CACHE_URLS_VITH = [
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_artists.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_flavors.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_mediums.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_movements.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_negative.safetensors',
+    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_trendings.safetensors',
+]
+=======
 CACHE_URL_BASE = 'https://huggingface.co/pharma/ci-preprocess/resolve/main/'
+>>>>>>> 80d97f1f967fb282ff108c2b7c4a466708472dac
 
 
 @dataclass
@@ -55,19 +75,21 @@ class Config:
     flavor_intermediate_count: int = 2048
     quiet: bool = False # when quiet progress bars are not shown
 
-    def apply_low_vram_defaults(self):
-        self.blip_model_type = 'base'
-        self.blip_offload = True
-        self.clip_offload = True
-        self.chunk_size = 1024
-        self.flavor_intermediate_count = 1024
-
+<<<<<<< HEAD
     # load flavorflav options
     load_artists: bool = True
     load_flavors: bool = True
     load_mediums: bool = True
     load_movements: bool = True
     load_trendings: bool = True
+=======
+    def apply_low_vram_defaults(self):
+        self.blip_model_type = 'base'
+        self.blip_offload = True
+        self.clip_offload = True
+        self.chunk_size = 1024
+        self.flavor_intermediate_count = 1024
+>>>>>>> 80d97f1f967fb282ff108c2b7c4a466708472dac
 
 class Interrogator():
     def __init__(self, config: Config):
@@ -120,6 +142,7 @@ class Interrogator():
             self.clip_preprocess = config.clip_preprocess
         self.tokenize = open_clip.get_tokenizer(clip_model_name)
 
+<<<<<<< HEAD
         # Stop these loading if we're not using them
         if self.config.load_trendings:
             sites = ['Artstation', 'behance', 'cg society', 'cgsociety', 'deviantart', 'dribble', 'flickr', 'instagram', 'pexels', 'pinterest', 'pixabay', 'pixiv', 'polycount', 'reddit', 'shutterstock', 'tumblr', 'unsplash', 'zbrush central']
@@ -127,6 +150,15 @@ class Interrogator():
             trending_list.extend(["trending on "+site for site in sites])
             trending_list.extend(["featured on "+site for site in sites])
             trending_list.extend([site+" contest winner" for site in sites])
+=======
+        sites = ['Artstation', 'behance', 'cg society', 'cgsociety', 'deviantart', 'dribble', 
+                 'flickr', 'instagram', 'pexels', 'pinterest', 'pixabay', 'pixiv', 'polycount', 
+                 'reddit', 'shutterstock', 'tumblr', 'unsplash', 'zbrush central']
+        trending_list = [site for site in sites]
+        trending_list.extend(["trending on "+site for site in sites])
+        trending_list.extend(["featured on "+site for site in sites])
+        trending_list.extend([site+" contest winner" for site in sites])
+>>>>>>> 80d97f1f967fb282ff108c2b7c4a466708472dac
 
         # Make these options loadable from config with: if self.config.load_xxx
         if self.config.load_artists:
@@ -134,10 +166,17 @@ class Interrogator():
             artists = [f"by {a}" for a in raw_artists]
             artists.extend([f"inspired by {a}" for a in raw_artists])
 
-        self._prepare_clip()
-    # Make these options loadable from config with: if self.config.load_xxx
+<<<<<<< HEAD
+        if config.download_cache:
+            self.download_cache(config.clip_model_name)
+
+        # Make these options loadable from config with: if self.config.load_xxx
         if self.config.load_artists:
             self.artists = LabelTable(artists, "artists", self.clip_model, self.tokenize, config)
+=======
+        self._prepare_clip()
+        self.artists = LabelTable(artists, "artists", self.clip_model, self.tokenize, config)
+>>>>>>> 80d97f1f967fb282ff108c2b7c4a466708472dac
         self.flavors = LabelTable(_load_list(config.data_path, 'flavors.txt'), "flavors", self.clip_model, self.tokenize, config)
         if self.config.load_mediums:
             self.mediums = LabelTable(_load_list(config.data_path, 'mediums.txt'), "mediums", self.clip_model, self.tokenize, config)
@@ -225,8 +264,13 @@ class Interrogator():
             image_features /= image_features.norm(dim=-1, keepdim=True)
         return image_features
 
-    def interrogate_classic(self, image: Image, max_flavors: int=3, caption: Optional[str]=None) -> str:
+<<<<<<< HEAD
+    def interrogate_classic(self, image: Image, max_flavors: int=3) -> str:
         """Classic mode creates a prompt in a standard format first describing the image,
+=======
+    def interrogate_classic(self, image: Image, max_flavors: int=3, caption: Optional[str]=None) -> str:
+        """Classic mode creates a prompt in a standard format first describing the image, 
+>>>>>>> 80d97f1f967fb282ff108c2b7c4a466708472dac
         then listing the artist, trending, movement, and flavor text modifiers."""
         caption = caption or self.generate_caption(image)
         image_features = self.image_to_features(image)
@@ -266,7 +310,8 @@ class Interrogator():
 
         return _truncate_to_fit(prompt, self.tokenize)
 
-    def interrogate_fast(self, image: Image, max_flavors: int=32, caption: Optional[str]=None) -> str:
+<<<<<<< HEAD
+    def interrogate_fast(self, image: Image, max_flavors: int = 32) -> str:
         """Fast mode simply adds the top ranked terms after a caption. It generally results in
         better similarity between generated prompt and image than classic mode, but the prompts
         are less readable."""
@@ -284,7 +329,14 @@ class Interrogator():
         if self.config.load_trendings is True:
             merged_options.append(self.trendings)
 
+        caption = self.generate_caption(image)
+=======
+    def interrogate_fast(self, image: Image, max_flavors: int=32, caption: Optional[str]=None) -> str:
+        """Fast mode simply adds the top ranked terms after a caption. It generally results in 
+        better similarity between generated prompt and image than classic mode, but the prompts
+        are less readable."""
         caption = caption or self.generate_caption(image)
+>>>>>>> 80d97f1f967fb282ff108c2b7c4a466708472dac
         image_features = self.image_to_features(image)
         # Move this to get details from merged_options instead
         merged = _merge_tables(merged_options, self.config)
@@ -424,7 +476,7 @@ class LabelTable():
             except Exception as e:
                 print(f"Failed to download {download_url}")
                 print(e)
-                return False
+                return False                
 
         if os.path.exists(cached_safetensors):
             try:
@@ -441,7 +493,12 @@ class LabelTable():
                     return True
 
         return False
+<<<<<<< HEAD
 
+
+=======
+    
+>>>>>>> 80d97f1f967fb282ff108c2b7c4a466708472dac
     def _rank(self, image_features: torch.Tensor, text_embeds: torch.Tensor, top_count: int=1, reverse: bool=False) -> str:
         top_count = min(top_count, len(text_embeds))
         text_embeds = torch.stack([torch.from_numpy(t) for t in text_embeds]).to(self.device)

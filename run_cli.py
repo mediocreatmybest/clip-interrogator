@@ -101,6 +101,13 @@ def main():
     parser.add_argument("--lowvram", action='store_true', help="Optimize settings for low VRAM")
 
     args = parser.parse_args()
+
+    # Set write mode for save function
+    if args.write_mode == 'write':
+        wmode = 'w'
+    elif args.write_mode == 'append':
+        wmode = 'a'
+
     if not args.folder and not args.image:
         parser.print_help()
         exit(1)

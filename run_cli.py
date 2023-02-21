@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import csv
-# import glob # Not used yet. Need to do this later, I'm tired. zzz
-import os
-
 import open_clip
+import os
 import requests
 import torch
 from PIL import Image
-
-from clip_interrogator import Config, Interrogator
-
+from clip_interrogator import Interrogator, Config
 
 def inference(ci, image, mode):
     image = image.convert('RGB')
@@ -102,16 +98,9 @@ def main():
                         help="Disables movements within captions")
     parser.add_argument("-dt", "--disable-trends", action="store_false",
                         help="Disables trendings within captions")
-
+    parser.add_argument("--lowvram", action='store_true', help="Optimize settings for low VRAM")
 
     args = parser.parse_args()
-
-    # Set write mode for save function
-    if args.write_mode == 'write':
-        wmode = 'w'
-    elif args.write_mode == 'append':
-        wmode = 'a'
-
     if not args.folder and not args.image:
         parser.print_help()
         exit(1)
@@ -153,6 +142,8 @@ def main():
         load_movements=args.disable_movements,
         load_trendings=args.disable_trends
         )
+    if args.lowvram:
+        config.apply_low_vram_defaults()
     ci = Interrogator(config)
 
     # process single image
@@ -174,7 +165,6 @@ def main():
             exit(1)
 
         files = [f for f in os.listdir(args.folder) if f.endswith('.jpg') or  f.endswith('.png')]
-
         prompts = []
         for file in files:
             image = Image.open(os.path.join(args.folder, file)).convert('RGB')
@@ -211,6 +201,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-

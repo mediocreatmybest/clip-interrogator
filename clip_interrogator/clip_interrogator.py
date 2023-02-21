@@ -4,7 +4,6 @@ import math
 import numpy as np
 import open_clip
 import os
-import pickle
 import requests
 import time
 import torch
@@ -16,7 +15,7 @@ from PIL import Image
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
 from tqdm import tqdm
-from typing import List
+from typing import List, Optional
 
 from safetensors.numpy import load_file, save_file
 
@@ -25,26 +24,10 @@ BLIP_MODELS = {
     'large': 'https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large_caption.pth'
 }
 
-CACHE_URLS_VITL = [
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_artists.safetensors',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_flavors.safetensors',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_mediums.safetensors',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_movements.safetensors',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_negative.safetensors',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-L-14_openai_trendings.safetensors',
-]
-
-CACHE_URLS_VITH = [
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_artists.safetensors',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_flavors.safetensors',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_mediums.safetensors',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_movements.safetensors',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_negative.safetensors',
-    'https://huggingface.co/pharma/ci-preprocess/resolve/main/ViT-H-14_laion2b_s32b_b79k_trendings.safetensors',
-]
+CACHE_URL_BASE = 'https://huggingface.co/pharma/ci-preprocess/resolve/main/'
 
 
-@dataclass
+@dataclass 
 class Config:
     # models can optionally be passed in directly
     blip_model: BLIP_Decoder = None
@@ -61,6 +44,7 @@ class Config:
     # clip settings
     clip_model_name: str = 'ViT-L-14/openai'
     clip_model_path: str = None
+    clip_offload: bool = False
 
     # interrogator settings
     cache_path: str = 'cache'   # path to store cached text embeddings
@@ -70,6 +54,13 @@ class Config:
     device: str = ("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
     flavor_intermediate_count: int = 2048
     quiet: bool = False # when quiet progress bars are not shown
+
+    def apply_low_vram_defaults(self):
+        self.blip_model_type = 'base'
+        self.blip_offload = True
+        self.clip_offload = True
+        self.chunk_size = 1024
+        self.flavor_intermediate_count = 1024
 
     # load flavorflav options
     load_artists: bool = True
@@ -82,6 +73,8 @@ class Interrogator():
     def __init__(self, config: Config):
         self.config = config
         self.device = config.device
+        self.blip_offloaded = True
+        self.clip_offloaded = True
 
         if config.blip_model is None:
             if not config.quiet:
@@ -91,8 +84,8 @@ class Interrogator():
             med_config = os.path.join(configs_path, 'med_config.json')
             blip_model = blip_decoder(
                 pretrained=BLIP_MODELS[config.blip_model_type],
-                image_size=config.blip_image_eval_size,
-                vit=config.blip_model_type,
+                image_size=config.blip_image_eval_size, 
+                vit=config.blip_model_type, 
                 med_config=med_config
             )
             blip_model.eval()
@@ -104,21 +97,6 @@ class Interrogator():
 
         self.load_clip_model()
 
-    def download_cache(self, clip_model_name: str):
-        if clip_model_name == 'ViT-L-14/openai':
-            cache_urls = CACHE_URLS_VITL
-        elif clip_model_name == 'ViT-H-14/laion2b_s32b_b79k':
-            cache_urls = CACHE_URLS_VITH
-        else:
-            # text embeddings will be precomputed and cached locally
-            return
-
-        os.makedirs(self.config.cache_path, exist_ok=True)
-        for url in cache_urls:
-            filepath = os.path.join(self.config.cache_path, url.split('/')[-1])
-            if not os.path.exists(filepath):
-                _download_file(url, filepath, quiet=self.config.quiet)
-
     def load_clip_model(self):
         start_time = time.time()
         config = self.config
@@ -129,14 +107,14 @@ class Interrogator():
 
             clip_model_name, clip_model_pretrained_name = config.clip_model_name.split('/', 2)
             self.clip_model, _, self.clip_preprocess = open_clip.create_model_and_transforms(
-                clip_model_name,
-                pretrained=clip_model_pretrained_name,
+                clip_model_name, 
+                pretrained=clip_model_pretrained_name, 
                 precision='fp16' if config.device == 'cuda' else 'fp32',
                 device=config.device,
                 jit=False,
                 cache_dir=config.clip_model_path
             )
-            self.clip_model.to(config.device).eval()
+            self.clip_model.eval()
         else:
             self.clip_model = config.clip_model
             self.clip_preprocess = config.clip_preprocess
@@ -156,12 +134,10 @@ class Interrogator():
             artists = [f"by {a}" for a in raw_artists]
             artists.extend([f"inspired by {a}" for a in raw_artists])
 
-        if config.download_cache:
-            self.download_cache(config.clip_model_name)
-
-        # Make these options loadable from config with: if self.config.load_xxx
-        if self.config.load_artists:
-            self.artists = LabelTable(artists, "artists", self.clip_model, self.tokenize, config)
+        self._prepare_clip()
+	# Make these options loadable from config with: if self.config.load_xxx
+        if self.config.load_artists:       
+	    self.artists = LabelTable(artists, "artists", self.clip_model, self.tokenize, config)
         self.flavors = LabelTable(_load_list(config.data_path, 'flavors.txt'), "flavors", self.clip_model, self.tokenize, config)
         if self.config.load_mediums:
             self.mediums = LabelTable(_load_list(config.data_path, 'mediums.txt'), "mediums", self.clip_model, self.tokenize, config)
@@ -176,30 +152,32 @@ class Interrogator():
             print(f"Loaded CLIP model and data in {end_time-start_time:.2f} seconds.")
 
     def chain(
-        self,
-        image_features: torch.Tensor,
-        phrases: List[str],
-        best_prompt: str="",
-        best_sim: float=0,
+        self, 
+        image_features: torch.Tensor, 
+        phrases: List[str], 
+        best_prompt: str="", 
+        best_sim: float=0, 
         min_count: int=8,
-        max_count: int=32,
-        desc="Chaining",
+        max_count: int=32, 
+        desc="Chaining", 
         reverse: bool=False
     ) -> str:
+        self._prepare_clip()
+
         phrases = set(phrases)
         if not best_prompt:
             best_prompt = self.rank_top(image_features, [f for f in phrases], reverse=reverse)
             best_sim = self.similarity(image_features, best_prompt)
             phrases.remove(best_prompt)
         curr_prompt, curr_sim = best_prompt, best_sim
-
+        
         def check(addition: str, idx: int) -> bool:
             nonlocal best_prompt, best_sim, curr_prompt, curr_sim
             prompt = curr_prompt + ", " + addition
             sim = self.similarity(image_features, prompt)
             if reverse:
                 sim = -sim
-
+            
             if sim > best_sim:
                 best_prompt, best_sim = prompt, sim
             if sim > curr_sim or idx < min_count:
@@ -219,8 +197,8 @@ class Interrogator():
         return best_prompt
 
     def generate_caption(self, pil_image: Image) -> str:
-        if self.config.blip_offload:
-            self.blip_model = self.blip_model.to(self.device)
+        self._prepare_blip()
+
         size = self.config.blip_image_eval_size
         gpu_image = transforms.Compose([
             transforms.Resize((size, size), interpolation=InterpolationMode.BICUBIC),
@@ -230,27 +208,27 @@ class Interrogator():
 
         with torch.no_grad():
             caption = self.blip_model.generate(
-                gpu_image,
-                sample=False,
-                num_beams=self.config.blip_num_beams,
-                max_length=self.config.blip_max_length,
+                gpu_image, 
+                sample=False, 
+                num_beams=self.config.blip_num_beams, 
+                max_length=self.config.blip_max_length, 
                 min_length=5
             )
-        if self.config.blip_offload:
-            self.blip_model = self.blip_model.to("cpu")
+
         return caption[0]
 
     def image_to_features(self, image: Image) -> torch.Tensor:
+        self._prepare_clip()
         images = self.clip_preprocess(image).unsqueeze(0).to(self.device)
         with torch.no_grad(), torch.cuda.amp.autocast():
             image_features = self.clip_model.encode_image(images)
             image_features /= image_features.norm(dim=-1, keepdim=True)
         return image_features
 
-    def interrogate_classic(self, image: Image, max_flavors: int=3) -> str:
-        """Classic mode creates a prompt in a standard format first describing the image,
+    def interrogate_classic(self, image: Image, max_flavors: int=3, caption: Optional[str]=None) -> str:
+        """Classic mode creates a prompt in a standard format first describing the image, 
         then listing the artist, trending, movement, and flavor text modifiers."""
-        caption = self.generate_caption(image)
+        caption = caption or self.generate_caption(image)
         image_features = self.image_to_features(image)
 
         if self.config.load_mediums:
@@ -288,8 +266,8 @@ class Interrogator():
 
         return _truncate_to_fit(prompt, self.tokenize)
 
-    def interrogate_fast(self, image: Image, max_flavors: int = 32) -> str:
-        """Fast mode simply adds the top ranked terms after a caption. It generally results in
+    def interrogate_fast(self, image: Image, max_flavors: int=32, caption: Optional[str]=None) -> str:
+        """Fast mode simply adds the top ranked terms after a caption. It generally results in 
         better similarity between generated prompt and image than classic mode, but the prompts
         are less readable."""
 
@@ -306,7 +284,7 @@ class Interrogator():
         if self.config.load_trendings is True:
             merged_options.append(self.trendings)
 
-        caption = self.generate_caption(image)
+        caption = caption or self.generate_caption(image)
         image_features = self.image_to_features(image)
         # Move this to get details from merged_options instead
         merged = _merge_tables(merged_options, self.config)
@@ -315,15 +293,15 @@ class Interrogator():
 
     def interrogate_negative(self, image: Image, max_flavors: int = 32) -> str:
         """Negative mode chains together the most dissimilar terms to the image. It can be used
-        to help build a negative prompt to pair with the regular positive prompt and often
+        to help build a negative prompt to pair with the regular positive prompt and often 
         improve the results of generated images particularly with Stable Diffusion 2."""
         image_features = self.image_to_features(image)
         flaves = self.flavors.rank(image_features, self.config.flavor_intermediate_count, reverse=True)
         flaves = flaves + self.negative.labels
         return self.chain(image_features, flaves, max_count=max_flavors, reverse=True, desc="Negative chain")
 
-    def interrogate(self, image: Image, min_flavors: int=8, max_flavors: int=32) -> str:
-        caption = self.generate_caption(image)
+    def interrogate(self, image: Image, min_flavors: int=8, max_flavors: int=32, caption: Optional[str]=None) -> str:
+        caption = caption or self.generate_caption(image)
         image_features = self.image_to_features(image)
 
         # Make this a configurable option
@@ -341,16 +319,16 @@ class Interrogator():
 
         merged = _merge_tables(merged_options, self.config)
         flaves = merged.rank(image_features, self.config.flavor_intermediate_count)
-
         best_prompt, best_sim = caption, self.similarity(image_features, caption)
         best_prompt = self.chain(image_features, flaves, best_prompt, best_sim, min_count=min_flavors, max_count=max_flavors, desc="Flavor chain")
 
-        fast_prompt = self.interrogate_fast(image, max_flavors)
-        classic_prompt = self.interrogate_classic(image, max_flavors)
+        fast_prompt = self.interrogate_fast(image, max_flavors, caption=caption)
+        classic_prompt = self.interrogate_classic(image, max_flavors, caption=caption)
         candidates = [caption, classic_prompt, fast_prompt, best_prompt]
         return candidates[np.argmax(self.similarities(image_features, candidates))]
 
     def rank_top(self, image_features: torch.Tensor, text_array: List[str], reverse: bool=False) -> str:
+        self._prepare_clip()
         text_tokens = self.tokenize([text for text in text_array]).to(self.device)
         with torch.no_grad(), torch.cuda.amp.autocast():
             text_features = self.clip_model.encode_text(text_tokens)
@@ -361,6 +339,7 @@ class Interrogator():
         return text_array[similarity.argmax().item()]
 
     def similarity(self, image_features: torch.Tensor, text: str) -> float:
+        self._prepare_clip()
         text_tokens = self.tokenize([text]).to(self.device)
         with torch.no_grad(), torch.cuda.amp.autocast():
             text_features = self.clip_model.encode_text(text_tokens)
@@ -369,12 +348,29 @@ class Interrogator():
         return similarity[0][0].item()
 
     def similarities(self, image_features: torch.Tensor, text_array: List[str]) -> List[float]:
+        self._prepare_clip()
         text_tokens = self.tokenize([text for text in text_array]).to(self.device)
         with torch.no_grad(), torch.cuda.amp.autocast():
             text_features = self.clip_model.encode_text(text_tokens)
             text_features /= text_features.norm(dim=-1, keepdim=True)
             similarity = text_features @ image_features.T
         return similarity.T[0].tolist()
+
+    def _prepare_blip(self):
+        if self.config.clip_offload and not self.clip_offloaded:
+            self.clip_model = self.clip_model.to('cpu')
+            self.clip_offloaded = True
+        if self.blip_offloaded:
+            self.blip_model = self.blip_model.to(self.device)
+            self.blip_offloaded = False
+
+    def _prepare_clip(self):
+        if self.config.blip_offload and not self.blip_offloaded:
+            self.blip_model = self.blip_model.to('cpu')
+            self.blip_offloaded = True
+        if self.clip_offloaded:
+            self.clip_model = self.clip_model.to(self.device)
+            self.clip_offloaded = False
 
 
 class LabelTable():
@@ -418,23 +414,25 @@ class LabelTable():
         if self.config.cache_path is None or desc is None:
             return False
 
-        # load from old pkl format if it exists
-        cached_pkl = os.path.join(self.config.cache_path, f"{sanitized_name}_{desc}.pkl")
-        if os.path.exists(cached_pkl):
-            with open(cached_pkl, 'rb') as f:
-                try:
-                    data = pickle.load(f)
-                    if data.get('hash') == hash:
-                        self.labels = data['labels']
-                        self.embeds = data['embeds']
-                        return True
-                except Exception as e:
-                    print(f"Error loading cached table {desc}: {e}")
-
-        # load from new safetensors format if it exists
         cached_safetensors = os.path.join(self.config.cache_path, f"{sanitized_name}_{desc}.safetensors")
+
+        if self.config.download_cache and not os.path.exists(cached_safetensors):
+            download_url = CACHE_URL_BASE + f"{sanitized_name}_{desc}.safetensors"
+            try:
+                os.makedirs(self.config.cache_path, exist_ok=True)
+                _download_file(download_url, cached_safetensors, quiet=self.config.quiet)
+            except Exception as e:
+                print(f"Failed to download {download_url}")
+                print(e)
+                return False                
+
         if os.path.exists(cached_safetensors):
-            tensors = load_file(cached_safetensors)
+            try:
+                tensors = load_file(cached_safetensors)
+            except Exception as e:
+                print(f"Failed to load {cached_safetensors}")
+                print(e)
+                return False
             if 'hash' in tensors and 'embeds' in tensors:
                 if np.array_equal(tensors['hash'], np.array([ord(c) for c in hash], dtype=np.int8)):
                     self.embeds = tensors['embeds']
@@ -443,8 +441,7 @@ class LabelTable():
                     return True
 
         return False
-
-
+    
     def _rank(self, image_features: torch.Tensor, text_embeds: torch.Tensor, top_count: int=1, reverse: bool=False) -> str:
         top_count = min(top_count, len(text_embeds))
         text_embeds = torch.stack([torch.from_numpy(t) for t in text_embeds]).to(self.device)
@@ -475,8 +472,11 @@ class LabelTable():
         return [top_labels[i] for i in tops]
 
 
-def _download_file(url: str, filepath: str, chunk_size: int = 64*1024, quiet: bool = False):
+def _download_file(url: str, filepath: str, chunk_size: int = 4*1024*1024, quiet: bool = False):
     r = requests.get(url, stream=True)
+    if r.status_code != 200:
+        return
+
     file_size = int(r.headers.get("Content-Length", 0))
     filename = url.split("/")[-1]
     progress = tqdm(total=file_size, unit="B", unit_scale=True, desc=filename, disable=quiet)

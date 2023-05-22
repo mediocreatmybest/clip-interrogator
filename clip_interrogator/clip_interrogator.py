@@ -144,7 +144,8 @@ class Interrogator():
     # Make these options loadable from config with: if self.config.load_xxx
         if self.config.load_artists:
             self.artists = LabelTable(artists, "artists", self)
-        self.flavors = LabelTable(load_list(config.data_path, 'flavors.txt'), "flavors", self)
+        if self.config.load_flavors:
+            self.flavors = LabelTable(load_list(config.data_path, 'flavors.txt'), "flavors", self)
         if self.config.load_mediums:
             self.mediums = LabelTable(load_list(config.data_path, 'mediums.txt'), "mediums", self)
         if self.config.load_movements:
@@ -233,7 +234,8 @@ class Interrogator():
             trending = self.trendings.rank(image_features, 1)[0]
         if self.config.load_movements:
             movement = self.movements.rank(image_features, 1)[0]
-        flaves = ", ".join(self.flavors.rank(image_features, max_flavors))
+        if self.config.load_flavors:
+            flaves = ", ".join(self.flavors.rank(image_features, max_flavors))
 
         # Remove Flavorflav items if disabled in config
         if self.config.load_artists is False:
